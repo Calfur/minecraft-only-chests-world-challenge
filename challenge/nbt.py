@@ -76,35 +76,43 @@ def world_info(world):
     return {"seed": settings["seed"], "spawn": level["spawn"]["pos"], "level": level}
 
 
-def region_chunks(path):
+def region_chunks(path, chunks=None):
+    """Read saved chunks, optionally restricted to absolute chunk coordinates."""
     path = Path(path)
-    data = path.read_bytes()
-    if len(data) < 8192:
-        raise ValueError(f"Invalid region: {path}")
-    for slot in range(1024):
-        location = int.from_bytes(data[slot * 4:slot * 4 + 4], "big")
-        if not location:
-            continue
-        offset, sectors = location >> 8, location & 255
-        start = offset * 4096
-        if start < 8192 or start + 5 > len(data):
-            raise ValueError(f"Invalid chunk offset in {path}")
-        length = int.from_bytes(data[start:start + 4], "big")
-        if length < 1 or length + 4 > sectors * 4096 or start + length + 4 > len(data):
-            raise ValueError(f"Invalid chunk length in {path}")
-        compression = data[start + 4]
-        if compression & 128:
-            payload = (path.parent / f"c.{(int(path.stem.split('.')[1]) * 32) + slot % 32}.{(int(path.stem.split('.')[2]) * 32) + slot // 32}.mcc").read_bytes()
-            compression &= 127
-        else:
-            payload = data[start + 5:start + 4 + length]
-        if compression == 1:
-            payload = gzip.decompress(payload)
-        elif compression == 2:
-            payload = zlib.decompress(payload)
-        elif compression != 3:
-            raise ValueError(f"Unsupported region compression {compression}; use deflate")
-        yield Reader(payload).root()
+    rx, rz = map(int, path.stem.split(".")[1:])
+    with path.open("rb") as region:
+        size = path.stat().st_size
+        header = region.read(8192)
+        if len(header) < 8192:
+            raise ValueError(f"Invalid region: {path}")
+        for slot in range(1024):
+            x, z = rx * 32 + slot % 32, rz * 32 + slot // 32
+            if chunks is not None and (x, z) not in chunks:
+                continue
+            location = int.from_bytes(header[slot * 4:slot * 4 + 4], "big")
+            if not location:
+                continue
+            offset, sectors = location >> 8, location & 255
+            start = offset * 4096
+            if start < 8192 or start + 5 > size:
+                raise ValueError(f"Invalid chunk offset in {path}")
+            region.seek(start)
+            length = int.from_bytes(region.read(4), "big")
+            if length < 1 or length + 4 > sectors * 4096 or start + length + 4 > size:
+                raise ValueError(f"Invalid chunk length in {path}")
+            compression = region.read(1)[0]
+            if compression & 128:
+                payload = (path.parent / f"c.{x}.{z}.mcc").read_bytes()
+                compression &= 127
+            else:
+                payload = region.read(length - 1)
+            if compression == 1:
+                payload = gzip.decompress(payload)
+            elif compression == 2:
+                payload = zlib.decompress(payload)
+            elif compression != 3:
+                raise ValueError(f"Unsupported region compression {compression}; use deflate")
+            yield Reader(payload).root()
 
 
 def state_name(state):
@@ -134,28 +142,33 @@ def block_at(chunk, x, y, z):
     return "minecraft:air"
 
 
-def chests_near_spawn(world, spawn, radius):
+def chests_near_spawn(world, spawn, radius, positions=None):
+    """Find real chest blocks, reading only chunks that can contain targets."""
     directory = Path(world) / "dimensions/minecraft/overworld/region"
-    min_rx = math.floor((spawn[0] - radius) / 512)
-    max_rx = math.floor((spawn[0] + radius) / 512)
-    min_rz = math.floor((spawn[2] - radius) / 512)
-    max_rz = math.floor((spawn[2] + radius) / 512)
+    if positions is None:
+        chunks = {(x, z)
+                  for x in range(math.floor((spawn[0] - radius) / 16), math.floor((spawn[0] + radius) / 16) + 1)
+                  for z in range(math.floor((spawn[2] - radius) / 16), math.floor((spawn[2] + radius) / 16) + 1)}
+    else:
+        positions = set(positions)
+        chunks = {(x // 16, z // 16) for x, y, z in positions}
     result = []
-    for rx in range(min_rx, max_rx + 1):
-        for rz in range(min_rz, max_rz + 1):
-            path = directory / f"r.{rx}.{rz}.mca"
-            if not path.exists():
+    for rx, rz in sorted({(x // 32, z // 32) for x, z in chunks}):
+        path = directory / f"r.{rx}.{rz}.mca"
+        if not path.exists():
+            continue
+        for chunk in region_chunks(path, chunks):
+            if chunk.get("Status") != "minecraft:full":
                 continue
-            for chunk in region_chunks(path):
-                if chunk.get("Status") != "minecraft:full":
+            for chest in chunk.get("block_entities", []):
+                if chest.get("id") not in ("minecraft:chest", "minecraft:trapped_chest"):
                     continue
-                for chest in chunk.get("block_entities", []):
-                    if chest.get("id") not in ("minecraft:chest", "minecraft:trapped_chest"):
-                        continue
-                    pos = tuple(chest[k] for k in ("x", "y", "z"))
-                    distance = math.hypot(pos[0] - spawn[0], pos[2] - spawn[2])
-                    if distance <= radius and block_at(chunk, *pos) in ("minecraft:chest", "minecraft:trapped_chest"):
-                        result.append(chest)
+                pos = tuple(chest[k] for k in ("x", "y", "z"))
+                if positions is not None and pos not in positions:
+                    continue
+                distance = math.hypot(pos[0] - spawn[0], pos[2] - spawn[2])
+                if distance <= radius and block_at(chunk, *pos) in ("minecraft:chest", "minecraft:trapped_chest"):
+                    result.append(chest)
     return result
 
 

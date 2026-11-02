@@ -10,6 +10,7 @@ These scripts generate **normal vanilla terrain**. They do not yet remove terrai
 ## Requirements
 
 - Python **3.10+** and Java **25+** on macOS or Linux.
+- The seed finder also needs a **Java 17+ JDK compiler** (`javac`) for its small cached helper. The compiler can come from a different installation than the Java 25 runtime; override discovery with `--javac /path/to/javac`.
 - The official 26.3 server bundle. If `--server-jar` is omitted, the tools download the pinned version from Mojang's version manifest and verify its SHA-1.
 - Accept the [Minecraft EULA](https://aka.ms/MinecraftEULA) with `--accept-eula` when starting each new temporary runtime.
 
@@ -44,9 +45,19 @@ python3 find_seed.py --help
 
 `--distance-only` retains the natural moss/bamboo and distance checks but disables the bonus-wood bridge test. `--keep-rejected` keeps temporary rejected worlds for diagnosis. `--work-dir` must name a new directory; existing runs are never overwritten.
 
-### Player-centered loading
+### Fast rejection before world generation
 
-Every search connects a stationary local creative test player and lets vanilla load the area around that player. View distance defaults to 16 chunks and simulation distance to 12; override them as needed:
+The finder keeps one small JVM alive to call the official 26.3 jar's spawn-origin, structure-placement, biome-column, rotation, and template-selection code. It reads the official templates' supply-chest markers. It generates no chunks, worlds, or chest loot at this stage. Most seeds can be rejected without starting a Minecraft server.
+
+The filter covers **every possible world-spawn position** in vanilla's 11×11-chunk spawn search, rather than assuming spawn equals the initial origin. A seed survives if any predicted supply chest could be within the requested distance of that whole area. The biome test checks the entire possible vertical column, retaining uncertain candidates near biome boundaries. This filter can admit unsuitable seeds; acceptance always requires the full check below.
+
+For each survivor, the finder starts a fresh vanilla server, flushes the actual world spawn, and checks the predicted chest distances again. Only seeds still in range connect a player and generate the player area. A disagreement with the predicted spawn bounds stops the search instead of silently rejecting the seed. Reports distinguish `worldgen_prefilter` and `saved_spawn_filter` rejections; filtered seeds have no verified loot or player-position data. `--keep-rejected` cannot retain a world for seeds rejected without creating one.
+
+`prefilter.json` records one-time setup time, and each attempt records filter, startup, inspection, and shutdown times. Include setup time when comparing short runs. The helper uses up to 1 GiB heap in addition to the verifier's `--heap` limit, and reuses libraries from the official server bundle. No third-party generator or approximate loot simulator is used.
+
+### Player-centered verification
+
+Every seed that passes the filters connects a stationary local creative test player and lets vanilla load the area around that player. View distance defaults to 16 chunks and simulation distance to 12; override them as needed:
 
 ```sh
 python3 find_seed.py --accept-eula \
@@ -72,7 +83,9 @@ results/seed-<number>/
   world/        # unopened vanilla world, ready for pregeneration
 ```
 
-Per-attempt reasons and timings are retained under `.work/search-*/attempts.jsonl`. Exit code **0** means a match, **2** means the requested range had no match, **1** means an error, and **130** means interrupted. On range exhaustion, the script prints the next starting seed. A new vanilla JVM is started per world seed; this is not a persistent multi-world generator.
+Per-attempt reasons and timings are retained under `.work/search-*/attempts.jsonl`. Exit code **0** means a match, **2** means the requested range had no match, **1** means an error, and **130** means interrupted. On range exhaustion, the script prints the next starting seed. The prefilter persists across seeds; every seed needing world verification starts a fresh vanilla JVM.
+
+Chest inspection reads only chunks intersecting the search area. After loot evaluation, it rereads only the target chest chunks; unrelated saved chunks are neither read nor decoded. Probe commands share one console round trip, and the flush before inspection also supplies the unopened snapshot. Reports include `timings_seconds` for startup, inspection, and shutdown, in addition to total elapsed time. Player loading distances and vanilla loot evaluation stay the same.
 
 ## Pregenerate the selected world
 
@@ -126,5 +139,13 @@ python3 -m unittest discover -s tests -v
 ```
 
 Tests cover negative/unaligned chunk bounds, partial batches, 26.3 NBT palette forms, actual chest-block validation, and natural starter-wood bridge budgets. Development also uses bounded real-26.3-server smoke tests; no full map or long seed search is started by the test suite.
+
+Run the optional official-jar prefilter tests, including a biome-boundary regression, with:
+
+```sh
+MINECRAFT_PREFILTER_TESTS=1 python3 -m unittest discover -s tests -v
+```
+
+These tests compile and run the helper using `.cache/server-26.3.jar` (override with `MINECRAFT_SERVER_JAR`). They start no Minecraft servers and generate no worlds.
 
 Version reference: [Minecraft Java Edition 26.3](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-3).

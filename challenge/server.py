@@ -106,13 +106,15 @@ def atomic_json(path, value):
 class Server:
     def __init__(self, jar, java, runtime, world, heap="4G", seed=None,
                  accept_eula=False, bonus_chest=False, poll_interval=0.1,
-                 player_view_distance=None, player_simulation_distance=12):
+                 player_view_distance=None, player_simulation_distance=12,
+                 defer_player=False):
         self.runtime = Path(runtime).resolve()
         self.runtime.mkdir(parents=True, exist_ok=True)
         self.process = None
         self.player = None
         self.player_view_distance = player_view_distance
         self.player_simulation_distance = player_simulation_distance
+        self.defer_player = defer_player
         if player_view_distance is not None and not (2 <= player_view_distance <= 32
                                                       and 2 <= player_simulation_distance <= 32):
             raise ValueError("Player view/simulation distances must be 2..32 chunks")
@@ -151,6 +153,7 @@ class Server:
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
+        self.port = port
         properties = {"server-ip": "127.0.0.1", "server-port": port,
                       "level-name": self.world.name, "view-distance": 2,
                       "simulation-distance": 2, "pause-when-empty-seconds": -1,
@@ -185,13 +188,19 @@ class Server:
             self.thread = threading.Thread(target=pump, daemon=True)
             self.thread.start()
             self.wait(lambda line: "Done (" in line, 180)
-            if self.player_view_distance is not None:
-                from challenge.player import LocalPlayer
-                self.player = LocalPlayer(port, self.player_view_distance)
-                self.player.wait_ready()
+            if self.player_view_distance is not None and not self.defer_player:
+                self.connect_player()
         except BaseException:
             self.close()
             raise
+
+    def connect_player(self):
+        if self.player_view_distance is None:
+            raise RuntimeError("Player loading was not configured")
+        if self.player is None:
+            from challenge.player import LocalPlayer
+            self.player = LocalPlayer(self.port, self.player_view_distance)
+            self.player.wait_ready()
 
     def send(self, command):
         if self.process.poll() is not None:
@@ -225,8 +234,8 @@ class Server:
                 raise RuntimeError("Minecraft rejected a command: " + line)
         return lines
 
-    def save(self):
-        lines = self.run("save-all flush", timeout=180)
+    def save(self, *before):
+        lines = self.run(*before, "save-all flush", timeout=180)
         if not any("Saved the game" in line for line in lines):
             raise RuntimeError("Minecraft did not confirm its save")
 

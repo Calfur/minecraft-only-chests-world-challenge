@@ -5,10 +5,12 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+import zlib
 
-from challenge.nbt import Reader, block_at, inventory, slab_budget
+from challenge.nbt import Reader, block_at, inventory, region_chunks, slab_budget
 from challenge.server import batches, chunk_bounds
-from find_seed import BONUS, SUPPLY, inspect_candidate
+from find_seed import (BONUS, SUPPLY, inspect_candidate, inspect_filtered_candidate,
+                       predicted_reachable)
 
 
 class ChunkPlanTests(unittest.TestCase):
@@ -59,6 +61,30 @@ class NativeFormatTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Reader(b"\x0a\x00\x00\x08\x00\x01x\x00\x05ab").root()
 
+    def test_region_filter_uses_absolute_negative_chunk_coordinates(self):
+        header = bytearray(8192)
+        sectors = []
+        for sector, (slot, x, z) in enumerate(((0, -32, -32), (1023, -1, -1)), 2):
+            header[slot * 4:slot * 4 + 4] = ((sector << 8) | 1).to_bytes(4, "big")
+            nbt = b"\x0a\0\0\x03\0\x04xPos" + struct.pack(">i", x)
+            nbt += b"\x03\0\x04zPos" + struct.pack(">i", z) + b"\0"
+            payload = b"\x02" + zlib.compress(nbt)
+            sectors.append((struct.pack(">I", len(payload)) + payload).ljust(4096, b"\0"))
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "r.-1.-1.mca"
+            path.write_bytes(header + b"".join(sectors))
+            all_chunks = list(region_chunks(path))
+            self.assertEqual(all_chunks, [{"xPos": -32, "zPos": -32}, {"xPos": -1, "zPos": -1}])
+            self.assertEqual(list(region_chunks(path, {(-1, -1)})), [all_chunks[1]])
+            self.assertEqual(list(region_chunks(path, {(0, 0)})), [])
+            # A skipped chunk's payload must never be read or decompressed.
+            with path.open("r+b") as region:
+                region.seek(8196)
+                region.write(b"\x7f")
+            self.assertEqual(list(region_chunks(path, {(-1, -1)})), [all_chunks[1]])
+            with self.assertRaises(ValueError):
+                list(region_chunks(path, {(-32, -32)}))
+
 
 class ReachabilityTests(unittest.TestCase):
     def test_observed_vanilla_bonus_roll_budget(self):
@@ -74,6 +100,39 @@ class ReachabilityTests(unittest.TestCase):
         chest = {"Items": [{"id": "minecraft:bamboo", "count": 1}, {"id": "minecraft:bamboo", "count": 2},
                            {"id": "minecraft:moss_block", "count": 3}]}
         self.assertEqual(inventory(chest), {"minecraft:bamboo": 3, "minecraft:moss_block": 3})
+
+
+class PrefilterTests(unittest.TestCase):
+    def test_refinement_uses_actual_spawn_and_includes_exact_distance(self):
+        prediction = {"supply_positions": [[-380, -58]]}
+        self.assertTrue(predicted_reachable(prediction, [-380, 200, -154], 96))
+        self.assertFalse(predicted_reachable(prediction, [-380, 56, -155], 96))
+
+    def test_impossible_saved_spawn_never_connects_a_player(self):
+        server = SimpleNamespace(save=lambda: None,
+                                 connect_player=lambda: self.fail("Impossible seed loaded player chunks"))
+        prediction = {"seed": 42, "spawn_bounds": [-80, -80, 95, 95], "supply_positions": [[100, 100]]}
+        with patch("find_seed.world_info", return_value={"seed": 42, "spawn": [0, 64, 0]}):
+            report, snapshot = inspect_filtered_candidate(server, Path("unused"), 96, False, prediction)
+        self.assertFalse(report["accepted"])
+        self.assertEqual(report["rejected_at"], "saved_spawn_filter")
+        self.assertIsNone(snapshot)
+
+    def test_unexpected_spawn_fails_instead_of_rejecting_a_seed(self):
+        prediction = {"seed": 42, "spawn_bounds": [-80, -80, 95, 95], "supply_positions": []}
+        with patch("find_seed.world_info", return_value={"seed": 42, "spawn": [96, 64, 0]}):
+            with self.assertRaisesRegex(RuntimeError, "outside prefilter bounds"):
+                inspect_filtered_candidate(SimpleNamespace(save=lambda: None), Path("unused"), 96, False, prediction)
+
+    def test_viable_seed_uses_player_verification_without_rewriting_predictions(self):
+        connected = []
+        server = SimpleNamespace(connect_player=lambda: connected.append(True), save=lambda: None)
+        prediction = {"seed": 42, "spawn_bounds": [-80, -80, 95, 95], "supply_positions": [[4, 8]]}
+        with patch("find_seed.world_info", return_value={"seed": 42, "spawn": [0, 64, 0]}), \
+                patch("find_seed.inspect_candidate", return_value=({"accepted": False}, None)) as inspect:
+            inspect_filtered_candidate(server, Path("unused"), 96, False, prediction)
+        self.assertEqual(connected, [True])
+        inspect.assert_called_once_with(server, Path("unused"), 96, False)
 
 
 class NaturalSelectionTests(unittest.TestCase):
@@ -96,7 +155,8 @@ class NaturalSelectionTests(unittest.TestCase):
                 self.player = SimpleNamespace(position=[0, 64, 0], chunks_received=256)
                 self.player_view_distance = 16
                 self.player_simulation_distance = 12
-            def save(self): pass
+            def save(self, *before):
+                self.commands.extend(before)
             def wait_loaded(self, dimension, chunks):
                 assert 1 <= len(list(chunks)) <= 256
                 self.commands.append("WAIT_LOADED")

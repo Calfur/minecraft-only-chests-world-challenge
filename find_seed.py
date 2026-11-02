@@ -13,6 +13,7 @@ import time
 import uuid
 
 from challenge.nbt import chests_near_spawn, inventory, slab_budget, world_info
+from challenge.prefilter import SeedPrefilter
 from challenge.server import (DIMENSIONS, Server, add_runtime_arguments, atomic_json,
                               batches, chunk_bounds, ensure_server, find_java)
 
@@ -26,10 +27,32 @@ def position(chest):
     return tuple(chest[key] for key in ("x", "y", "z"))
 
 
+def predicted_reachable(prediction, spawn, max_distance):
+    return any(math.hypot(x - spawn[0], z - spawn[2]) <= max_distance
+               for x, z in prediction["supply_positions"])
+
+
+def inspect_filtered_candidate(server, world, max_distance, distance_only, prediction):
+    # Before any player joins, level.dat can still contain the placeholder
+    # spawn written during initialization. Flush the actual in-memory spawn.
+    server.save()
+    info = world_info(world)
+    if info["seed"] != prediction["seed"]:
+        raise RuntimeError("Saved world seed disagrees with prefilter")
+    x0, z0, x1, z1 = prediction["spawn_bounds"]
+    if not (x0 <= info["spawn"][0] <= x1 and z0 <= info["spawn"][2] <= z1):
+        raise RuntimeError("Vanilla spawn fell outside prefilter bounds; refusing to skip seeds")
+    if not predicted_reachable(prediction, info["spawn"], max_distance):
+        return {"seed": info["seed"], "spawn": info["spawn"], "accepted": False,
+                "reason": "no_reachable_supply_chest", "rejected_at": "saved_spawn_filter"}, None
+    server.connect_player()
+    return inspect_candidate(server, world, max_distance, distance_only)
+
+
 def inspect_candidate(server, world, max_distance, distance_only):
     if server.player is None:
         raise RuntimeError("Seed search requires a connected local player")
-    server.save()
+    # Startup has already saved level metadata. No chunks are inspected yet.
     info = world_info(world)
     spawn = info["spawn"]
     report = {"seed": info["seed"], "spawn": spawn}
@@ -55,7 +78,9 @@ def inspect_candidate(server, world, max_distance, distance_only):
     if int(match[3]) > max_distance + 128:
         return report | {"accepted": False, "reason": "no_nearby_shipwreck"}, None
 
-    server.save()
+    # Freeze automatic saves before the one flush used both for inspection and
+    # the unopened snapshot. Nothing edits containers between these steps.
+    server.save("save-off")
     report["spawn_area_generation_seconds"] = round(time.monotonic() - generated_at, 3)
     nearby = chests_near_spawn(world, spawn, radius)
     supplies = sorted((c for c in nearby if c.get("LootTable") == SUPPLY
@@ -71,23 +96,23 @@ def inspect_candidate(server, world, max_distance, distance_only):
     if any(c.get("LootTableSeed", 0) == 0 for c in targets):
         return report | {"accepted": False, "reason": "non_deterministic_zero_loot_seed"}, None
 
-    # Freeze automatic saves, explicitly flush, and retain an unopened snapshot.
+    # Retain the already-flushed unopened world while automatic saves are off.
     # Only the disposable server world is probed. The snapshot's LootTableSeed
     # and LootTable fields are never rewritten or replaced with selected rolls.
-    server.run("save-off")
-    server.save()
     snapshot = world.parent.parent / "pristine-world"
     shutil.copytree(world, snapshot, ignore=shutil.ignore_patterns("session.lock"))
     probe_chunks = [(c["x"] // 16, c["z"] // 16) for c in targets]
     server.wait_loaded(OVERWORLD, probe_chunks)
+    probes = []
     for chest in targets:
         x, y, z = position(chest)
         # getItem invokes vanilla's own lazy chest-loot generation. Reading and
         # replacing the same slot does not add items. An empty-slot message is
         # harmless: reading it has still unpacked the container's loot table.
-        server.run(f"execute in {OVERWORLD} run item replace block {x} {y} {z} container.0 from block {x} {y} {z} container.0")
+        probes.append(f"execute in {OVERWORLD} run item replace block {x} {y} {z} container.0 from block {x} {y} {z} container.0")
+    server.run(*probes)
     server.save()
-    opened = {position(c): c for c in chests_near_spawn(world, spawn, radius)}
+    opened = {position(c): c for c in chests_near_spawn(world, spawn, radius, positions=map(position, targets))}
     for chest in targets:
         if position(chest) not in opened or "LootTable" in opened[position(chest)]:
             raise RuntimeError("Vanilla did not unpack a probe chest; refusing to infer its loot")
@@ -108,7 +133,8 @@ def inspect_candidate(server, world, max_distance, distance_only):
         if REQUIRED <= items.keys() and (distance_only or budget >= bridge_required):
             # Verify that the published snapshot still has the original unopened
             # containers and their original, naturally generated loot seeds.
-            pristine = {position(c): c for c in chests_near_spawn(snapshot, spawn, radius)}
+            pristine = {position(c): c for c in chests_near_spawn(snapshot, spawn, radius,
+                                                               positions=(position(bonus), position(chest)))}
             for original in (bonus, chest):
                 assert pristine[position(original)] == original, "Pristine chest data changed"
             report.update(accepted=True, reason="matched", selected_chest=candidate,
@@ -134,6 +160,7 @@ def parser():
     p.add_argument("--keep-rejected", action="store_true", help="Retain rejected temporary worlds for debugging")
     p.add_argument("--view-distance", type=int, default=16, help="Local player view distance in chunks (2..32)")
     p.add_argument("--simulation-distance", type=int, default=12, help="Local player simulation distance (2..32)")
+    p.add_argument("--javac", help="Java 17+ compiler for the cached vanilla prefilter helper")
     return p
 
 
@@ -161,6 +188,15 @@ def main(argv=None):
     java = find_java(args.java)
     jar = ensure_server(args.server_jar, Path(".cache"))
     print(f"Searching from seed {start}; log: {run / 'attempts.jsonl'}", flush=True)
+    setup_began = time.monotonic()
+    with SeedPrefilter(jar, java, run / "runtime", args.javac) as prefilter:
+        atomic_json(run / "prefilter.json", {"setup_seconds": round(time.monotonic() - setup_began, 3),
+                                             "spawn_search_chunks": 11,
+                                             "minecraft_version": "26.3"})
+        return search(args, run, java, jar, start, prefilter)
+
+
+def search(args, run, java, jar, start, prefilter):
     for offset in range(args.max_attempts):
         seed = start + offset
         attempt = run / f"attempt-{offset + 1:06d}"
@@ -168,11 +204,28 @@ def main(argv=None):
         world.parent.mkdir(parents=True)
         began = time.monotonic()
         print(f"Attempt {offset + 1}/{args.max_attempts}: seed {seed}", flush=True)
-        with Server(jar, java, run / "runtime", world, args.heap, seed=seed,
-                    accept_eula=args.accept_eula, bonus_chest=True, poll_interval=args.poll_interval,
-                    player_view_distance=args.view_distance,
-                    player_simulation_distance=args.simulation_distance) as server:
-            report, snapshot = inspect_candidate(server, world, args.max_distance, args.distance_only)
+        prediction = prefilter.check(seed, args.max_distance)
+        filtered = time.monotonic()
+        if not prediction["supply_positions"]:
+            report = {"seed": seed, "accepted": False, "reason": "no_possible_supply_chest",
+                      "rejected_at": "worldgen_prefilter"}
+            snapshot = None
+            started = inspected = finished = filtered
+        else:
+            with Server(jar, java, run / "runtime", world, args.heap, seed=seed,
+                        accept_eula=args.accept_eula, bonus_chest=True, poll_interval=args.poll_interval,
+                        player_view_distance=args.view_distance,
+                        player_simulation_distance=args.simulation_distance, defer_player=True) as server:
+                started = time.monotonic()
+                report, snapshot = inspect_filtered_candidate(server, world, args.max_distance,
+                                                               args.distance_only, prediction)
+                inspected = time.monotonic()
+            finished = time.monotonic()
+        report["prefilter"] = prediction
+        report["timings_seconds"] = {"prefilter": round(filtered - began, 3),
+                                     "startup": round(started - filtered, 3),
+                                     "inspection": round(inspected - started, 3),
+                                     "shutdown": round(finished - inspected, 3)}
         report["elapsed_seconds"] = round(time.monotonic() - began, 3)
         with (run / "attempts.jsonl").open("a") as log:
             log.write(json.dumps(report) + "\n")
