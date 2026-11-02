@@ -44,6 +44,20 @@ python3 find_seed.py --help
 
 `--distance-only` retains the natural moss/bamboo and distance checks but disables the bonus-wood bridge test. `--keep-rejected` keeps temporary rejected worlds for diagnosis. `--work-dir` must name a new directory; existing runs are never overwritten.
 
+### Player-centered loading
+
+Every search connects a stationary local creative test player and lets vanilla load the area around that player. View distance defaults to 16 chunks and simulation distance to 12; override them as needed:
+
+```sh
+python3 find_seed.py --accept-eula \
+  --view-distance 16 --simulation-distance 12 \
+  --start-seed -7050104159075989928 --max-attempts 1 --keep-rejected
+```
+
+The finder uses vanilla player chunk tickets and waits for the search area before running `/locate`. It is still a dedicated server, rather than an integrated singleplayer server, and does not reproduce rendering or player movement. The search area must fit inside the chosen view distance; incompatible settings fail before starting a server. The finder uses a temporary offline-mode runtime bound to `127.0.0.1` so the built-in client needs no account credentials.
+
+Reports record the loading settings and test player's position. Chunk generation can produce different shipwreck heights and loot seeds across loading methods. Bonus-chest positions and contents can also vary between fresh worlds. Verified loot and bridge budgets therefore describe the preserved generated save; recreating its seed alone is not a guarantee of the same result.
+
 ### Natural loot guarantee
 
 No chest loot seed is selected, injected, or rerolled. Before evaluating loot, the script freezes automatic saves, flushes the server, and snapshots the unopened world. It then asks vanilla to read each target container in the **disposable working world**. It reads the resulting binary NBT inventory after a confirmed save.

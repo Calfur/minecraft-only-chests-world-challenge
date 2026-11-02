@@ -2,6 +2,7 @@ import gzip
 import struct
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -90,10 +91,15 @@ class NaturalSelectionTests(unittest.TestCase):
                           {"id": "minecraft:bamboo", "count": 2}]},
         ]
         class FakeServer:
-            def __init__(self): self.commands = []
+            def __init__(self):
+                self.commands = []
+                self.player = SimpleNamespace(position=[0, 64, 0], chunks_received=256)
+                self.player_view_distance = 16
+                self.player_simulation_distance = 12
             def save(self): pass
-            def force_batch(self, *args): pass
-            def force_chunks(self, *args): pass
+            def wait_loaded(self, dimension, chunks):
+                assert 1 <= len(list(chunks)) <= 256
+                self.commands.append("WAIT_LOADED")
             def run(self, *commands):
                 self.commands.extend(commands)
                 if any("locate structure" in c for c in commands):
@@ -111,6 +117,7 @@ class NaturalSelectionTests(unittest.TestCase):
         self.assertEqual(bonus["LootTableSeed"], -77)
         self.assertEqual(supply["LootTableSeed"], 456)
         self.assertFalse(any("LootTableSeed:" in c or "setblock " in c or "data merge " in c for c in server.commands))
+        self.assertEqual(server.commands[0], "WAIT_LOADED")
         return report
 
     def test_match_publishes_original_seed_and_original_unopened_snapshot(self):
@@ -134,6 +141,13 @@ class NaturalSelectionTests(unittest.TestCase):
         self.assertEqual(report["chests_checked"][0]["bridge_slabs_required"], 12)
         self.assertFalse(report["accepted"])
         self.assertEqual(report["reason"], "insufficient_natural_starter_wood")
+
+    def test_search_waits_for_player_chunks_before_locate(self):
+        report = self.candidate(45)
+        self.assertTrue(report["accepted"])
+        self.assertEqual(report["chunk_loading"]["mode"], "player")
+        self.assertEqual(report["chunk_loading"]["view_distance"], 16)
+        self.assertEqual(report["chunk_loading"]["simulation_distance"], 12)
 
     def test_required_items_do_not_override_insufficient_natural_bridge_materials(self):
         report = self.candidate(4)

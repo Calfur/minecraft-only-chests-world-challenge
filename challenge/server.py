@@ -105,10 +105,17 @@ def atomic_json(path, value):
 
 class Server:
     def __init__(self, jar, java, runtime, world, heap="4G", seed=None,
-                 accept_eula=False, bonus_chest=False, poll_interval=0.1):
+                 accept_eula=False, bonus_chest=False, poll_interval=0.1,
+                 player_view_distance=None, player_simulation_distance=12):
         self.runtime = Path(runtime).resolve()
         self.runtime.mkdir(parents=True, exist_ok=True)
         self.process = None
+        self.player = None
+        self.player_view_distance = player_view_distance
+        self.player_simulation_distance = player_simulation_distance
+        if player_view_distance is not None and not (2 <= player_view_distance <= 32
+                                                      and 2 <= player_simulation_distance <= 32):
+            raise ValueError("Player view/simulation distances must be 2..32 chunks")
         self.log = None
         self.control_lock = (self.runtime / ".controller.lock").open("a")
         try:
@@ -153,6 +160,11 @@ class Server:
                       "region-file-compression": "deflate", "generate-structures": "true"}
         if seed is not None:
             properties["level-seed"] = seed
+        if self.player_view_distance is not None:
+            properties.update({"view-distance": self.player_view_distance,
+                               "simulation-distance": self.player_simulation_distance,
+                               "online-mode": "false", "white-list": "false",
+                               "gamemode": "creative"})
         (self.runtime / "server.properties").write_text("\n".join(f"{k}={v}" for k, v in properties.items()) + "\n")
         self.queue = queue.Queue()
         self.log = (self.runtime / "controller.log").open("a", encoding="utf-8")
@@ -173,6 +185,10 @@ class Server:
             self.thread = threading.Thread(target=pump, daemon=True)
             self.thread.start()
             self.wait(lambda line: "Done (" in line, 180)
+            if self.player_view_distance is not None:
+                from challenge.player import LocalPlayer
+                self.player = LocalPlayer(port, self.player_view_distance)
+                self.player.wait_ready()
         except BaseException:
             self.close()
             raise
@@ -222,6 +238,8 @@ class Server:
         marker = "CV_READY_" + uuid.uuid4().hex
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            if self.player is not None:
+                self.player.check()
             lines = self.run(f"execute in {dimension} {checks} run say {marker}", timeout=max(1, deadline - time.monotonic()))
             if any(line.endswith("[Server] " + marker) for line in lines):
                 return
@@ -237,16 +255,10 @@ class Server:
                  f"execute in {dimension} run forceload add {x0 * 16} {z0 * 16} {x1 * 16 + 15} {z1 * 16 + 15}")
         self.wait_loaded(dimension, ((x, z) for x in range(x0, x1 + 1) for z in range(z0, z1 + 1)))
 
-    def force_chunks(self, dimension, chunks):
-        chunks = list(dict.fromkeys(chunks))
-        if not 1 <= len(chunks) <= 256:
-            raise ValueError("Expected between 1 and 256 probe chunks")
-        self.forced_dimensions.add(dimension)
-        self.run(f"execute in {dimension} run forceload remove all", *(
-            f"execute in {dimension} run forceload add {x * 16} {z * 16}" for x, z in chunks))
-        self.wait_loaded(dimension, chunks)
-
     def close(self):
+        if self.player is not None:
+            self.player.close()
+            self.player = None
         if self.process is not None and self.process.poll() is None:
             try:
                 for dimension in sorted(getattr(self, "forced_dimensions", set())):

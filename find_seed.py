@@ -27,10 +27,22 @@ def position(chest):
 
 
 def inspect_candidate(server, world, max_distance, distance_only):
+    if server.player is None:
+        raise RuntimeError("Seed search requires a connected local player")
     server.save()
     info = world_info(world)
     spawn = info["spawn"]
     report = {"seed": info["seed"], "spawn": spawn}
+    radius = math.ceil(max_distance + 32)
+    generated_at = time.monotonic()
+    # Wait for normal player tickets before /locate can request structures.
+    for x0, z0, x1, z1 in batches(chunk_bounds(spawn[0], spawn[2], radius)):
+        server.wait_loaded(OVERWORLD, ((x, z) for x in range(x0, x1 + 1)
+                                      for z in range(z0, z1 + 1)))
+    report["chunk_loading"] = {"mode": "player", "player_position": server.player.position,
+                               "view_distance": server.player_view_distance,
+                               "simulation_distance": server.player_simulation_distance,
+                               "chunks_received": server.player.chunks_received}
     # Tagged lookup includes beached and underwater shipwrecks. The generous
     # padding rejects only clearly distant structures; actual chest distance
     # is checked below, never the structure-origin distance alone.
@@ -43,10 +55,6 @@ def inspect_candidate(server, world, max_distance, distance_only):
     if int(match[3]) > max_distance + 128:
         return report | {"accepted": False, "reason": "no_nearby_shipwreck"}, None
 
-    generated_at = time.monotonic()
-    radius = math.ceil(max_distance + 32)
-    for bounds in batches(chunk_bounds(spawn[0], spawn[2], radius)):
-        server.force_batch(OVERWORLD, bounds)
     server.save()
     report["spawn_area_generation_seconds"] = round(time.monotonic() - generated_at, 3)
     nearby = chests_near_spawn(world, spawn, radius)
@@ -70,7 +78,8 @@ def inspect_candidate(server, world, max_distance, distance_only):
     server.save()
     snapshot = world.parent.parent / "pristine-world"
     shutil.copytree(world, snapshot, ignore=shutil.ignore_patterns("session.lock"))
-    server.force_chunks(OVERWORLD, [(c["x"] // 16, c["z"] // 16) for c in targets])
+    probe_chunks = [(c["x"] // 16, c["z"] // 16) for c in targets]
+    server.wait_loaded(OVERWORLD, probe_chunks)
     for chest in targets:
         x, y, z = position(chest)
         # getItem invokes vanilla's own lazy chest-loot generation. Reading and
@@ -123,6 +132,8 @@ def parser():
     p.add_argument("--work-dir", type=Path, help="New, unused run directory")
     p.add_argument("--output-dir", type=Path, default=Path("results"))
     p.add_argument("--keep-rejected", action="store_true", help="Retain rejected temporary worlds for debugging")
+    p.add_argument("--view-distance", type=int, default=16, help="Local player view distance in chunks (2..32)")
+    p.add_argument("--simulation-distance", type=int, default=12, help="Local player simulation distance (2..32)")
     return p
 
 
@@ -130,6 +141,12 @@ def main(argv=None):
     args = parser().parse_args(argv)
     if not 1 <= args.max_attempts <= 1_000_000 or not 1 <= args.max_distance <= 512:
         raise ValueError("Use 1..1,000,000 attempts and 1..512 blocks maximum distance")
+    if not 2 <= args.view_distance <= 32 or not 2 <= args.simulation_distance <= 32:
+        raise ValueError("Player view/simulation distances must be 2..32 chunks")
+    # Cover the square's corners, allowing a chunk of offset for player spawn.
+    needed = math.ceil(math.sqrt(2) * (math.ceil((args.max_distance + 32) / 16) + 1)) + 1
+    if needed > args.view_distance:
+        raise ValueError("Increase --view-distance or reduce --max-distance to cover the player search area")
     start = args.start_seed if args.start_seed is not None else secrets.randbelow(2**64 - args.max_attempts) - 2**63
     if not -(2**63) <= start <= 2**63 - args.max_attempts:
         raise ValueError("Seed range must fit signed 64-bit integers")
@@ -138,7 +155,9 @@ def main(argv=None):
         raise FileExistsError(f"Choose a new --work-dir; refusing to overwrite {run}")
     run.mkdir(parents=True)
     atomic_json(run / "run.json", {"minecraft_version": "26.3", "start_seed": start,
-                                  "max_attempts": args.max_attempts, "max_distance": args.max_distance})
+                                  "max_attempts": args.max_attempts, "max_distance": args.max_distance,
+                                  "chunk_loading": "player", "view_distance": args.view_distance,
+                                  "simulation_distance": args.simulation_distance})
     java = find_java(args.java)
     jar = ensure_server(args.server_jar, Path(".cache"))
     print(f"Searching from seed {start}; log: {run / 'attempts.jsonl'}", flush=True)
@@ -150,7 +169,9 @@ def main(argv=None):
         began = time.monotonic()
         print(f"Attempt {offset + 1}/{args.max_attempts}: seed {seed}", flush=True)
         with Server(jar, java, run / "runtime", world, args.heap, seed=seed,
-                    accept_eula=args.accept_eula, bonus_chest=True, poll_interval=args.poll_interval) as server:
+                    accept_eula=args.accept_eula, bonus_chest=True, poll_interval=args.poll_interval,
+                    player_view_distance=args.view_distance,
+                    player_simulation_distance=args.simulation_distance) as server:
             report, snapshot = inspect_candidate(server, world, args.max_distance, args.distance_only)
         report["elapsed_seconds"] = round(time.monotonic() - began, 3)
         with (run / "attempts.jsonl").open("a") as log:
