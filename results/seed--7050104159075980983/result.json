@@ -1,0 +1,113 @@
+{
+  "seed": -7050104159075980983,
+  "spawn": [
+    128,
+    64,
+    48
+  ],
+  "chunk_loading": {
+    "mode": "player",
+    "player_position": [
+      137.5,
+      64.0,
+      44.5
+    ],
+    "view_distance": 16,
+    "simulation_distance": 12,
+    "chunks_received": 356
+  },
+  "structure_distance": 16,
+  "spawn_area_generation_seconds": 3.818,
+  "bonus_chest": {
+    "position": [
+      132,
+      66,
+      54
+    ],
+    "loot_seed": 6659020533454342035,
+    "items": {
+      "minecraft:jungle_log": 4,
+      "minecraft:apple": 3,
+      "minecraft:stick": 7,
+      "minecraft:oak_log": 2,
+      "minecraft:bread": 1,
+      "minecraft:wooden_axe": 1,
+      "minecraft:wooden_pickaxe": 1
+    },
+    "slabs_after_crafting_table": 36
+  },
+  "chests_checked": [
+    {
+      "position": [
+        109,
+        59,
+        63
+      ],
+      "loot_seed": 6009839295362045710,
+      "horizontal_distance": 24.20743687382041,
+      "items": {
+        "minecraft:moss_block": 4,
+        "minecraft:bamboo": 1,
+        "minecraft:poisonous_potato": 4,
+        "minecraft:potato": 3,
+        "minecraft:coast_armor_trim_smithing_template": 2
+      },
+      "bridge_slabs_required": 32
+    }
+  ],
+  "accepted": true,
+  "reason": "matched",
+  "selected_chest": {
+    "position": [
+      109,
+      59,
+      63
+    ],
+    "loot_seed": 6009839295362045710,
+    "horizontal_distance": 24.20743687382041,
+    "items": {
+      "minecraft:moss_block": 4,
+      "minecraft:bamboo": 1,
+      "minecraft:poisonous_potato": 4,
+      "minecraft:potato": 3,
+      "minecraft:coast_armor_trim_smithing_template": 2
+    },
+    "bridge_slabs_required": 32
+  },
+  "starter_position": [
+    132,
+    66,
+    54
+  ],
+  "bridge_materials_required": true,
+  "minecraft_version": "26.3",
+  "natural_loot_seeds_preserved": true,
+  "prefilter": {
+    "seed": -7050104159075980983,
+    "origin": [
+      128,
+      48
+    ],
+    "spawn_bounds": [
+      48,
+      -32,
+      223,
+      143
+    ],
+    "supply_positions": [
+      [
+        109,
+        63
+      ]
+    ],
+    "elapsed_seconds": 0.0028205
+  },
+  "timings_seconds": {
+    "prefilter": 0.003,
+    "startup": 4.219,
+    "inspection": 5.897,
+    "shutdown": 0.851
+  },
+  "elapsed_seconds": 10.97,
+  "world": "/Users/robin/Repos/minecraft-only-chests-world-challenge/results/seed--7050104159075980983/world"
+}

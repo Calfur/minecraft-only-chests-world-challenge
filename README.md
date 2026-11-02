@@ -125,7 +125,7 @@ Performance and interruption behavior:
 - Checkpoints are written only **after a confirmed disk flush**, every eight batches by default (`--checkpoint-every`).
 - Resume the exact same plan with `--resume`. Any batch after the last saved checkpoint may be repeated safely. Keep the selected world unchanged between resume runs.
 - Ctrl-C stops the server and clears the tools' forced chunks. These tools are for fresh preparation worlds; existing manual forceload tickets in the selected dimension will be cleared.
-- Logs/checkpoints stay in `.work/pregeneration/`. Generated files and downloaded jars are ignored by Git.
+- Logs/checkpoints stay in `.work/pregeneration/`. Temporary working files and downloaded jars are ignored by Git. Published saves and reports under `results/` can be committed; temporary `session.lock` files remain ignored.
 
 ```sh
 python3 pregenerate.py --world results/seed-<number>/world \

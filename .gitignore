@@ -2,5 +2,5 @@ __pycache__/
 *.py[cod]
 .cache/
 .work/
-results/
+results/**/session.lock
 .DS_Store
