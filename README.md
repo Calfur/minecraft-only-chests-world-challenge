@@ -30,9 +30,9 @@ The default acceptance criteria are:
 1. Read the **actual saved world spawn**, not an assumed `(0, 0)`.
 2. Find an actual, generated shipwreck **supply chest** within **96 horizontal blocks**. Its block state must really be a chest; unfinished block-entity records are ignored.
 3. Let vanilla unpack that chest's **original generated loot seed** in a disposable world, and require **both moss blocks and bamboo in that same chest**.
-4. Generate a **natural bonus chest** using vanilla's `--bonusChest` option. Its original loot must provide enough wood for a crafting table and a slab bridge to the supply chest, with two blocks of margin.
+4. Generate a **natural bonus chest** using vanilla's `--bonusChest` option. Its original loot must provide enough wood for a crafting table and a slab bridge from its natural position to the supply chest.
 
-Reachability assumes the challenge converter will put the starter chest at the natural spawn's X/Z, aligned to the supply chest's height, preserving the bonus chest's original contents/loot seed. The script reports this planned position; it does not move any chest itself. The bridge budget accounts for different wood types and slab crafting batches. It does not include optional parkour, chest recycling, or later resources.
+The bonus chest stays at its naturally generated position, with its original contents/loot seed. Required bridge slabs are `abs(supply_x - bonus_x) + abs(supply_z - bonus_z)`, with no buffer and no allowance for vertical distance. The separate 96-block horizontal distance limit is measured from world spawn. The bridge budget accounts for a crafting table, different wood types, and slab crafting batches. It does not include optional parkour, chest recycling, or later resources. Reports record the natural `starter_position` and each candidate's `bridge_slabs_required`; `horizontal_distance` remains the distance from world spawn.
 
 Useful options:
 

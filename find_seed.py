@@ -90,10 +90,11 @@ def inspect_candidate(server, world, max_distance, distance_only):
     for chest in supplies:
         items = inventory(opened[position(chest)])
         distance = math.hypot(chest["x"] - spawn[0], chest["z"] - spawn[2])
-        bridge_required = abs(chest["x"] - spawn[0]) + abs(chest["z"] - spawn[2]) + 2
+        # Use the natural bonus-chest position, counting only horizontal steps.
+        bridge_required = abs(chest["x"] - bonus["x"]) + abs(chest["z"] - bonus["z"])
         candidate = {"position": list(position(chest)), "loot_seed": chest["LootTableSeed"],
                      "horizontal_distance": distance, "items": items,
-                     "bridge_slabs_required_with_margin": bridge_required}
+                     "bridge_slabs_required": bridge_required}
         report["chests_checked"].append(candidate)
         if REQUIRED <= items.keys() and (distance_only or budget >= bridge_required):
             # Verify that the published snapshot still has the original unopened
@@ -102,7 +103,7 @@ def inspect_candidate(server, world, max_distance, distance_only):
             for original in (bonus, chest):
                 assert pristine[position(original)] == original, "Pristine chest data changed"
             report.update(accepted=True, reason="matched", selected_chest=candidate,
-                          planned_starter_position=[spawn[0], chest["y"], spawn[2]],
+                          starter_position=list(position(bonus)),
                           bridge_materials_required=not distance_only,
                           minecraft_version="26.3", natural_loot_seeds_preserved=True)
             return report, snapshot

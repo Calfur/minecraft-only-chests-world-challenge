@@ -76,10 +76,10 @@ class ReachabilityTests(unittest.TestCase):
 
 
 class NaturalSelectionTests(unittest.TestCase):
-    def candidate(self, wood_count):
-        bonus = {"id": "minecraft:chest", "x": 1, "y": 65, "z": 0,
+    def candidate(self, wood_count, bonus_position=(1, 65, 0), supply_position=(6, 53, 0)):
+        bonus = {"id": "minecraft:chest", **dict(zip(("x", "y", "z"), bonus_position)),
                  "LootTable": BONUS, "LootTableSeed": -77}
-        supply = {"id": "minecraft:chest", "x": 6, "y": 53, "z": 0,
+        supply = {"id": "minecraft:chest", **dict(zip(("x", "y", "z"), supply_position)),
                   "LootTable": SUPPLY, "LootTableSeed": 456}
         original = [bonus, supply]
         opened = [
@@ -117,8 +117,23 @@ class NaturalSelectionTests(unittest.TestCase):
         report = self.candidate(45)
         self.assertTrue(report["accepted"])
         self.assertEqual(report["selected_chest"]["loot_seed"], 456)
-        self.assertEqual(report["planned_starter_position"], [0, 53, 0])
+        self.assertEqual(report["starter_position"], [1, 65, 0])
+        self.assertNotIn("planned_starter_position", report)
         self.assertTrue(report["natural_loot_seeds_preserved"])
+
+    def test_exact_horizontal_budget_uses_natural_bonus_position_without_buffer(self):
+        report = self.candidate(7, bonus_position=(-2, 100, -3), supply_position=(1, -40, 0))
+        self.assertEqual(report["bonus_chest"]["slabs_after_crafting_table"], 6)
+        self.assertEqual(report["chests_checked"][0]["bridge_slabs_required"], 6)
+        self.assertEqual(report["chests_checked"][0]["horizontal_distance"], 1)
+        self.assertEqual(report["starter_position"], [-2, 100, -3])
+        self.assertTrue(report["accepted"])
+
+    def test_bridge_from_bonus_can_exceed_budget_even_when_spawn_is_close(self):
+        report = self.candidate(7, bonus_position=(-6, 65, 0))
+        self.assertEqual(report["chests_checked"][0]["bridge_slabs_required"], 12)
+        self.assertFalse(report["accepted"])
+        self.assertEqual(report["reason"], "insufficient_natural_starter_wood")
 
     def test_required_items_do_not_override_insufficient_natural_bridge_materials(self):
         report = self.candidate(4)
