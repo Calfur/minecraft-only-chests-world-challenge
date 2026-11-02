@@ -1,11 +1,13 @@
 # Minecraft Only Chests World Challenge
 
-Two standard-library Python tools for **Minecraft Java 26.3**:
+Standard-library Python tools for **Minecraft Java 26.3**:
 
 - `find_seed.py`: find a **natural world seed** with moss and bamboo together in a nearby shipwreck supply chest, using Minecraft's own loot evaluation.
-- `pregenerate.py`: generate selected chunks in the Overworld, Nether, or End, with progress checkpoints and configurable polling.
+- `pregenerate.py`: generate selected chunks in the Overworld, Nether, or End (or overlap all three), with progress checkpoints and configurable polling.
+- `convert_world.py`: convert a separate copy of the prepared save into the chest-only void challenge in all three dimensions.
+- `verify_void.py`: test a disposable copy with the official server, including spawning, End arrival, dragon defeat, and empty future chunks.
 
-These scripts generate **normal vanilla terrain**. They do not yet remove terrain, install a mod, or modify your existing challenge save. The all-dimension void conversion discussed for the challenge is a separate step still to implement. That step must preserve Overworld End portal frames, Nether/End chests, the End fountain, crystal entities, and dragon-fight behavior.
+Seed finding and pregeneration produce **normal vanilla terrain**. Run the separate converter below to apply the challenge rules. The converter requires a new output directory and preserves the original save and original starter loot.
 
 ## Requirements
 
@@ -98,7 +100,16 @@ python3 pregenerate.py --world results/seed-<number>/world \
   --dimension overworld --radius 2304 --dry-run
 ```
 
-Then run the desired dimensions separately:
+Generate all three dimensions concurrently through one vanilla server:
+
+```sh
+python3 pregenerate.py --world results/seed-<number>/world \
+  --dimension all --radius 4000 --heap 8G --resume --accept-eula
+```
+
+Each dimension keeps at most one batch active and advances independently. All dimensions share the server's CPU workers and disk, so speedup depends on the machine. `--max-batches N` stops cleanly after N additional completed batches for bounded benchmarks; it does not mark the remaining plan complete. A run summary records throughput and time spent flushing saves in the work directory.
+
+Alternatively, run the desired dimensions separately:
 
 ```sh
 python3 pregenerate.py --world results/seed-<number>/world \
@@ -122,7 +133,7 @@ Performance and interruption behavior:
 - At most **256 chunks** per vanilla `forceload` batch; side length configurable with `--batch-size 1..16`.
 - Completion polls default to **0.1 seconds**, replacing the old two-second polling delay.
 - Every chunk in a batch must be fully loaded before advancing.
-- Checkpoints are written only **after a confirmed disk flush**, every eight batches by default (`--checkpoint-every`).
+- Checkpoints are written only **after a confirmed disk flush**, every 32 completed batches across the selected dimensions by default (`--checkpoint-every`). Unsaved work may be repeated on resume. Generation stops at a saved checkpoint if less than 2 GiB of disk space remains.
 - Resume the exact same plan with `--resume`. Any batch after the last saved checkpoint may be repeated safely. Keep the selected world unchanged between resume runs.
 - Ctrl-C stops the server and clears the tools' forced chunks. These tools are for fresh preparation worlds; existing manual forceload tickets in the selected dimension will be cleared.
 - Logs/checkpoints stay in `.work/pregeneration/`. Temporary working files and downloaded jars are ignored by Git. Published saves and reports under `results/` can be committed; temporary `session.lock` files remain ignored.
@@ -131,6 +142,51 @@ Performance and interruption behavior:
 python3 pregenerate.py --world results/seed-<number>/world \
   --dimension overworld --radius 2304 --resume --accept-eula
 ```
+
+## Convert the completed world
+
+Close any server or Minecraft instance using the source save, then create a new copy:
+
+```sh
+python3 convert_world.py --world results/seed-<number>/world \
+  --output results/seed-<number>/void-world-4k \
+  --report results/seed-<number>/result.json --initialize-end --accept-eula
+```
+
+`--initialize-end` lets vanilla initialize the natural dragon and fountain on the output copy before terrain removal. Six worker processes convert independent region files. Every written region is read back, and retained chest NBT is checked against the source data. The converter refuses an existing output directory; a failed conversion leaves an incomplete output for inspection rather than modifying the source.
+
+The rules are:
+
+- Overworld: retain chest blocks, trapped chests, and End portal frames/portal blocks.
+- Nether: retain chest blocks and trapped chests.
+- End: retain chests, the central fountain, portal/gateway blocks, crystals, and the live dragon. Remove islands, pillars, cages, and other terrain. Preserve natural shulkers and elytra item frames; elytra frames are fixed so removal of their supporting ship does not destroy them.
+
+Container positions, inventory NBT, loot tables, and loot seeds remain unchanged. Chest waterlogging is disabled and old fluid/block ticks are cleared so removed water does not return. Pending container records without actual chest blocks in unfinished border chunks are discarded. Heights and lighting are invalidated/rebuilt for the cleared terrain. The source's generated buffer chunks are converted too.
+
+Empty noise generators keep new chunks void in all dimensions while retaining the original biome sources, climate routing, and structure placement lookup. Decoration, carving, aquifers, and new structure generation are disabled. Existing stronghold/fortress starts, references, and piece bounding boxes remain intact, so Eyes of Ender can find the preserved strongholds and fortress mobs can spawn on suitable player-built platforms. No new chests or structures generate beyond the prepared area. Minecraft displays its experimental-settings warning for these custom dimension generators.
+
+The small included datapack places first-time players and respawning players on the original bonus chest, moves arriving End players to the fountain, and removes the automatic obsidian arrival platform. It does not edit loot or continuously clear player builds. Dragon respawn cleanup is intentionally omitted: respawning a defeated dragon can recreate vanilla pillars and cages.
+
+The converted copy starts in Survival with commands enabled for verification (`/gamemode creative` to inspect). It does not carry over the seed finder's disposable player. A conversion receipt is written beside the output directory.
+
+Run the server verification on a disposable copy:
+
+```sh
+python3 verify_void.py --world results/seed-<number>/void-world-4k \
+  --report results/seed-<number>/result.json \
+  --work-dir .work/verify-void
+```
+
+The verification work directory must not already contain a `runtime-test-world` folder. This server test uses the EULA acceptance already authorized for these tools. The delivered converted save is not played or opened during verification.
+
+To repair an older flat-generator converted save, close it first and preserve a backup of the settings being replaced:
+
+```sh
+python3 repair_void_generation.py --world /path/to/converted-save \
+  --original results/seed-<number>/world --backup .work/void-settings-backup
+```
+
+This changes only world-generation settings and the datapack. Chunks, player builds, inventory, and chest loot are untouched. The original save must have the same seed and use vanilla noise generators.
 
 ## Tests
 

@@ -45,6 +45,7 @@ class LocalPlayer:
     def __init__(self, port, view_distance):
         self.error = None
         self.position = None
+        self.rotation = [0.0, 0.0]
         self.chunks_received = 0
         self.ready = threading.Event()
         self.stopping = threading.Event()
@@ -138,11 +139,17 @@ class LocalPlayer:
                         stream = io.BytesIO(payload)
                         teleport_id = read_varint(stream)
                         x, y, z, dx, dy, dz, yaw, pitch = struct.unpack(">ddddddff", stream.read(56))
-                        # This stationary client only expects absolute spawn teleports.
                         flags = struct.unpack(">I", stream.read(4))[0]
-                        if flags & 31:
-                            raise RuntimeError("Unexpected relative local player teleport")
+                        if flags & 7 and self.position is None:
+                            raise RuntimeError("Relative teleport before initial player position")
+                        previous = self.position or [0.0, 0.0, 0.0]
+                        x += previous[0] if flags & 1 else 0
+                        y += previous[1] if flags & 2 else 0
+                        z += previous[2] if flags & 4 else 0
+                        yaw += self.rotation[0] if flags & 8 else 0
+                        pitch += self.rotation[1] if flags & 16 else 0
                         self.position = [x, y, z]
+                        self.rotation = [yaw, pitch]
                         self.send(0, varint(teleport_id) + struct.pack(">dddff", x, y, z, yaw, pitch))
                         self.send(31, struct.pack(">dddffB", x, y, z, yaw, pitch, 0))
                         self.send(44)  # player loaded

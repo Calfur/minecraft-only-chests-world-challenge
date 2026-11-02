@@ -256,13 +256,26 @@ class Server:
         raise TimeoutError(f"Chunks did not become fully loaded in {dimension}")
 
     def force_batch(self, dimension, bounds):
+        self.start_batch(dimension, bounds)
+        x0, z0, x1, z1 = bounds
+        self.wait_loaded(dimension, ((x, z) for x in range(x0, x1 + 1) for z in range(z0, z1 + 1)))
+
+    def start_batch(self, dimension, bounds):
+        """Queue generation without waiting, allowing other dimensions to overlap."""
         x0, z0, x1, z1 = bounds
         if (x1 - x0 + 1) * (z1 - z0 + 1) > 256:
             raise ValueError("Vanilla forceload batches must not exceed 256 chunks")
         self.forced_dimensions.add(dimension)
         self.run(f"execute in {dimension} run forceload remove all",
                  f"execute in {dimension} run forceload add {x0 * 16} {z0 * 16} {x1 * 16 + 15} {z1 * 16 + 15}")
-        self.wait_loaded(dimension, ((x, z) for x in range(x0, x1 + 1) for z in range(z0, z1 + 1)))
+
+    def batch_loaded(self, dimension, bounds):
+        x0, z0, x1, z1 = bounds
+        checks = " ".join(f"if loaded {x * 16} 64 {z * 16}"
+                          for x in range(x0, x1 + 1) for z in range(z0, z1 + 1))
+        marker = "CV_READY_" + uuid.uuid4().hex
+        lines = self.run(f"execute in {dimension} {checks} run say {marker}")
+        return any(line.endswith("[Server] " + marker) for line in lines)
 
     def close(self):
         if self.player is not None:
